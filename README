@@ -1,0 +1,101 @@
+These scripts allow processing of dual-indexed arp and tp0470 amplicons sequenced by Nanopore, as described by Lieberman et al, 2022.
+
+
+SETUP: 
+
+-Porechop is required for trimming and demultiplexing fastqs. Because we require two demux steps (forward and reverse), the two provided adapters scripts (adapters.py = F, adapters2.py = R) should be added to the Porechop package installation location. Between F and R demuxing, the porechop.py script will need to be modified to point to the correct adapters file
+
+-Confirm forward adapters file will be chosen when porechop.py is called:
+
+	nano /path/to/porechop.py
+
+	#edit the .adapters portion of the line that starts: 
+	from .adapters import ADAPTERS #.adapters refers to forward adapter file, .adapters2 is for reverse
+
+-Concatenate all pass filter fastqs from guppy or basecaller of choice, and add to desired directory. All scripts have relative paths and are called from the directory that contains the fastq. 
+
+-reference files should be placed in a directory entitled "ref" that resides in the same directory as the concatenated fastq, and indexed with bwa mem.
+
+-The consensus calling script can be obtained from: https://github.com/edgardomortiz/sam2consensus
+
+
+1. DEMULTIPLEXING:
+
+#forward demuliplex:
+
+	mkdir demux
+	porechop -i CONCATENATED.fastq.gz -b ./demux/ --no_split -v 1 > ./demux/forwardindex_log.log
+
+
+#reverse demultiplex:
+#confirm adapters2 file selected by modifying porechop.py:
+
+	nano /path/to/porechop.py
+
+	#edit the .adapters portion of the line that starts: 
+	from .adapters2 import ADAPTERS #.adapters refers to forward adapter file, .adapters2 is for reverse
+
+
+	mkdir -p ./demux/DI
+	for i in ./demux/*.fastq.gz
+		do
+			base=$(basename $i .fastq.gz)
+			porechop -i $i -b ./demux/${base}/ --no_split -v 1 --extra_end_trim 0
+			cd ./demux/${base}
+			for j in *.fastq.gz
+				do
+					rev=$(basename $j .fastq.gz)
+					cp $j ${rev}${base}.fastq.gz
+					mv ${rev}${base}.fastq.gz ../DI/
+				done
+			cd ../../
+		done >> ./demux/reverseindex_log.log
+
+#due to the low fidelity of nanopore reads, many reads (20-40% in our hands) will not be successfully demultiplexed in both directions, and will be added to none.fastq.gz. Sequestering this file eliminates it from mapping steps: 
+
+		cd ./demux/DI
+		mkdir none
+		mv *none*.fastq.gz ./none 
+
+
+2. ALIGNMENT: 
+
+
+	mkdir ./DI/bam
+	mkdir ./DI/bam/stats
+	mkdir ./DI/bam/consensus
+	for i in ./DI/*.fastq.gz
+		do
+			base=$(basename $i .fastq.gz)
+			bwa mem -x ont2d ./ref/ARP-refv3n.fasta $i > ./DI/bam/${base}.arp.sam
+			pileup.sh in=./DI/bam/${base}.arp.sam out=./DI/bam/stats/${base}.arp.covstats.txt
+			./sam2consensus.py -i ./DI/bam/${base}.arp.sam -c 0.51 -m 10 -d 1500 -p ${base}.arp -o ./DI/bam/consensus
+			bwa mem -x ont2d ./ref/TP0470-refv4.fasta $i > ./DI/bam/${base}.tp0470.sam
+			pileup.sh in=./DI/bam/${base}.tp0470.sam out=./DI/bam/stats/${base}.tp0470.covstats.txt
+			./sam2consensus.py -i ./DI/bam/${base}.tp0470.sam -c 0.51 -m 10 -d 1500 -p ${base}.tp0470 -o ./DI/bam/consensus
+		done
+
+
+3. PROCESSING:
+
+#define run name: 
+
+	run="Run01"
+
+#call R script to parse all arp and tp0470 mapping statistics 
+#will need to update absolute paths on lines 17 and 18 prior to running
+#sample_sheet.csv will need to be added to fastq directory
+
+	Rscript --vanilla nanopore_repeat_length.R ${run}
+
+
+4. INTERPRETATION
+
+#Run the histograms.R script to make histograms for the # of reads mapped to each reference for arp and tp0470, and can be helpful to diagnose background (low molecular weight) bands. This is currently written to manually spot check samples by inputing sample name into the script. 
+
+
+
+
+
+
+
